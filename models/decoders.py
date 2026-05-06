@@ -586,12 +586,6 @@ class Transformer(Decoder):
 class EEGNetRegressor(Decoder):
     """
     EEGNet-style regressor adapted from https://github.com/vlawhern/arl-eegmodels.
-
-    Expects X with shape:
-        (n_trials, seq_len, n_channels)
-
-    Internally reshapes to:
-        (n_trials, n_channels, seq_len, 1)
     """
     def __init__(
         self,
