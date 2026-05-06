@@ -7,7 +7,7 @@ from pathlib import Path
 import gc
 import tensorflow as tf
 
-from models.decoders import LinReg, RandForest, RNN, FNN, Transformer
+from models.decoders import LinReg, RandForest, RNN, FNN, Transformer, EEGNetRegressor
 from utils.loaders import load_data
 from utils.processors import Dataset
 from utils.metrics import full_eval
@@ -33,7 +33,8 @@ if __name__ == "__main__":
         ("RandomForest", "tabular", RandForest),
         ("FNN", "tabular", FNN),
         ("Transformer", "sequence", Transformer),
-        ("RNN", "sequence", RNN)
+        ("RNN", "sequence", RNN),
+        ("EEGNet", "sequence", EEGNetRegressor)
     ]
 
     model_names = [name for name, _, _ in registry]
