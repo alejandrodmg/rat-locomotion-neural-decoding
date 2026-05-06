@@ -42,6 +42,7 @@ rat-locomotion-decoding/
     autocorrelations.npy
   tests/
     stats.py
+    temporal_structure.py
 ```
 
 Key conventions:
