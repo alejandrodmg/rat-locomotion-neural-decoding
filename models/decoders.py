@@ -11,8 +11,11 @@ from tensorflow.keras import Model, Input, callbacks, Sequential
 from tensorflow.keras.layers import (
     LSTM, Dense, Dropout,
     MultiHeadAttention, LayerNormalization, Embedding,
-    Conv1D, Flatten, Add
+    Conv1D, Conv2D, AveragePooling2D, Flatten, Add,
+    SeparableConv2D, DepthwiseConv2D,
+    BatchNormalization, Activation, SpatialDropout2D
 )
+from tensorflow.keras.constraints import max_norm
 
 class Decoder(ABC):
     @abstractmethod
@@ -578,4 +581,213 @@ class Transformer(Decoder):
             batch_size=self.batch_size,
             verbose=verbose
         )
+        return y_pred.ravel()
+
+class EEGNetRegressor(Decoder):
+    """
+    EEGNet-style regressor adapted from https://github.com/vlawhern/arl-eegmodels.
+
+    Expects X with shape:
+        (n_trials, seq_len, n_channels)
+
+    Internally reshapes to:
+        (n_trials, n_channels, seq_len, 1)
+    """
+    def __init__(
+        self,
+        dropoutRate=0.5, # within-subject
+        kernLength=5, # adapted, smaller since our epochs are 200ms long at 100Hz
+        F1=8,
+        D=2,
+        F2=16,
+        norm_rate=0.25,
+        dropoutType="Dropout",
+        pool1=4, 
+        pool2=2, # smaller to have valid pooling with 200ms epochs
+        lr=1e-3,
+        epochs=50,
+        batch_size=32,
+        checkpoint_path="best_eegnet.keras",
+        early_stopping=True,
+        patience=5,
+        min_delta=0.0
+    ):
+        self.dropoutRate = dropoutRate
+        self.kernLength = kernLength
+        self.F1 = F1
+        self.D = D
+        self.F2 = F2
+        self.norm_rate = norm_rate
+        self.dropoutType = dropoutType
+        self.pool1 = pool1
+        self.pool2 = pool2
+        self.lr = lr
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.checkpoint_path = checkpoint_path
+        self.early_stopping = early_stopping
+        self.patience = patience
+        self.min_delta = min_delta
+        self.seq_len = None
+        self.n_channels = None
+        self.model = None
+
+    def _prepare_X(self, X):
+        X = np.asarray(X, dtype=np.float32)
+
+        if X.ndim != 3:
+            raise ValueError(
+                "EEGNetRegressor expects X with shape "
+                "(n_trials, seq_len, n_channels)."
+            )
+
+        # From (trials, time, channels) to (trials, channels, time, 1)
+        X = np.transpose(X, (0, 2, 1))
+        X = X[..., np.newaxis]
+        return X
+
+    def _compile(self, lr):
+        self.model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+            loss="mean_squared_error"
+        )
+
+    def _build_model(self):
+        if self.dropoutType == "SpatialDropout2D":
+            dropout_layer = SpatialDropout2D
+        elif self.dropoutType == "Dropout":
+            dropout_layer = Dropout
+        else:
+            raise ValueError(
+                "dropoutType must be either 'SpatialDropout2D' or 'Dropout'."
+            )
+
+        inp = Input(shape=(self.n_channels, self.seq_len, 1), name="input")
+
+        x = Conv2D(
+            self.F1,
+            (1, self.kernLength),
+            padding="same",
+            use_bias=False,
+            name="temporal_conv"
+        )(inp)
+
+        x = BatchNormalization(name="bn_1")(x)
+
+        x = DepthwiseConv2D(
+            (self.n_channels, 1),
+            use_bias=False,
+            depth_multiplier=self.D,
+            depthwise_constraint=max_norm(1.0),
+            name="spatial_depthwise_conv"
+        )(x)
+
+        x = BatchNormalization(name="bn_2")(x)
+        x = Activation("elu", name="elu_1")(x)
+        x = AveragePooling2D((1, self.pool1), name="avg_pool_1")(x)
+        x = dropout_layer(self.dropoutRate, name="dropout_1")(x)
+
+        x = SeparableConv2D(
+            self.F2,
+            (1, 16),
+            use_bias=False,
+            padding="same",
+            name="separable_conv"
+        )(x)
+
+        x = BatchNormalization(name="bn_3")(x)
+        x = Activation("elu", name="elu_2")(x)
+        x = AveragePooling2D((1, self.pool2), name="avg_pool_2")(x)
+        x = dropout_layer(self.dropoutRate, name="dropout_2")(x)
+
+        x = Flatten(name="flatten")(x)
+
+        out = Dense(
+            1,
+            name="out",
+            kernel_constraint=max_norm(self.norm_rate)
+        )(x)
+
+        model = Model(inputs=inp, outputs=out)
+        self.model = model
+        self._compile(self.lr)
+        return model
+
+    def fit(self, X, y, X_val=None, y_val=None, verbose=1, **kwargs):
+        X_raw = np.asarray(X, dtype=np.float32)
+
+        if X_raw.ndim != 3:
+            raise ValueError(
+                "EEGNetRegressor expects X with shape "
+                "(n_trials, seq_len, n_channels)."
+            )
+
+        seq_len = int(X_raw.shape[1])
+        n_channels = int(X_raw.shape[2])
+
+        if (
+            self.model is None
+            or self.seq_len != seq_len
+            or self.n_channels != n_channels
+        ):
+            self.seq_len = seq_len
+            self.n_channels = n_channels
+            self.model = self._build_model()
+
+        X = self._prepare_X(X_raw)
+        y = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+
+        callbacks_list = []
+        validation_data = None
+
+        if X_val is not None and y_val is not None:
+            X_val = self._prepare_X(X_val)
+            y_val = np.asarray(y_val, dtype=np.float32).reshape(-1, 1)
+            validation_data = (X_val, y_val)
+
+            callbacks_list.append(
+                callbacks.ModelCheckpoint(
+                    filepath=self.checkpoint_path,
+                    monitor="val_loss",
+                    save_best_only=True,
+                    verbose=verbose
+                )
+            )
+
+            if self.early_stopping:
+                callbacks_list.append(
+                    callbacks.EarlyStopping(
+                        monitor="val_loss",
+                        patience=self.patience,
+                        min_delta=self.min_delta,
+                        restore_best_weights=True,
+                        verbose=verbose
+                    )
+                )
+
+        self.model.fit(
+            X,
+            y,
+            validation_data=validation_data,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            callbacks=callbacks_list,
+            verbose=verbose,
+            **kwargs
+        )
+
+        if any(isinstance(cb, callbacks.ModelCheckpoint) for cb in callbacks_list):
+            self.model = tf.keras.models.load_model(self.checkpoint_path)
+
+        return self
+
+    def predict(self, X, verbose=1, **kwargs):
+        X = self._prepare_X(X)
+
+        y_pred = self.model.predict(
+            X,
+            batch_size=self.batch_size,
+            verbose=verbose
+        )
+
         return y_pred.ravel()
