@@ -16,7 +16,7 @@ if __name__ == "__main__":
     selection_r2 = pd.read_csv(f"{RESULTS_PATH}/model_selection_r2_score.csv")
 
     # Correlation
-    cor_fig, axs = plt.subplots(5, 1, figsize=(4, 7), sharex=True)
+    cor_fig, axs = plt.subplots(6, 1, figsize=(4, 8.3), sharex=True)
 
     bin_width = 0.05
     bins = np.arange(0, 1 + bin_width, bin_width)
@@ -24,9 +24,10 @@ if __name__ == "__main__":
     plots = [
         ("LinearRegression", "Linear Regression", "steelblue"),
         ("RandomForest", "Random Forest", "seagreen"),
-        ("FNN", "Feed-Forward Neural Network", "gray"),
-        ("Transformer", "Encoder-Only Transformer", "gold"),
-        ("RNN", "Recurrent Neural Network", "orange"),
+        ("EEGNet", "EEGNet", "gray"),
+        ("FNN", "Feed-Forward Neural Network", "gold"),
+        ("Transformer", "Encoder-Only Transformer", "orange"),
+        ("RNN", "Recurrent Neural Network", "purple"),
     ]
 
     for ax, (col, title, color) in zip(axs, plots):
@@ -54,7 +55,7 @@ if __name__ == "__main__":
     plt.close()
 
     # R2 Score
-    r2_fig, axs = plt.subplots(5, 1, figsize=(4, 7), sharex=True)
+    r2_fig, axs = plt.subplots(6, 1, figsize=(4, 8.3), sharex=True)
 
     bin_width = 0.05
     bins = np.arange(0, 1 + bin_width, bin_width)
